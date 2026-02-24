@@ -4,7 +4,7 @@ import pandas as pd
 import re
 import io
 
-# --- FUNÇÕES DE LIMPEZA E EXTRAÇÃO ---
+# --- FUNÇÕES DE UTILIDADE ---
 def clean_text(text):
     if isinstance(text, str):
         return re.sub(r'[^ -~]', '', text)
@@ -12,6 +12,7 @@ def clean_text(text):
 
 def extract_codigo_barras(codigos_barras):
     if isinstance(codigos_barras, list) and codigos_barras:
+        # Pega o primeiro código de barras da lista
         primeiro = codigos_barras[0].get('codigoBarras', '') if isinstance(codigos_barras[0], dict) else ''
         return clean_text(primeiro)
     return ''
@@ -31,40 +32,40 @@ def gera_token_wms(client_id, client_secret):
         return None
 
 # --- INTERFACE STREAMLIT ---
-st.set_page_config(page_title="WMS SKU Query", layout="wide")
-st.title("📦 Consulta de Produtos WMS")
+st.set_page_config(page_title="WMS SKU Detail", layout="wide")
+st.title("📦 Consulta Detalhada de SKUs WMS")
 
 with st.sidebar:
     st.header("🔑 Credenciais WMS")
-    # Campos protegidos para as chaves
     c_id = st.text_input("Client ID", type="password", key="wms_cid")
     c_secret = st.text_input("Client Secret", type="password", key="wms_sec")
     
     st.divider()
     
     st.header("📍 Localização")
-    # NOVO: Campo para informar o ID da Unidade/Depósito
     u_id = st.text_input("Unidade ID (UUID)", placeholder="Cole o ID da unidade aqui...", key="wms_uid")
     
-    st.caption("🔒 Os dados inseridos ficam salvos apenas nesta sessão do navegador.")
+    st.caption("🔒 Dados protegidos por sessão.")
 
 # --- BOTÃO DE EXECUÇÃO ---
-if st.button("🚀 Iniciar Consulta de SKUs"):
+if st.button("🚀 Iniciar Consulta Analítica"):
     if not all([c_id, c_secret, u_id]):
-        st.error("⚠️ Por favor, preencha o Client ID, Client Secret e o Unidade ID na barra lateral.")
+        st.error("⚠️ Preencha todos os campos na barra lateral.")
     else:
         token = gera_token_wms(c_id, c_secret)
         
         if not token:
-            st.error("❌ Falha na autenticação. Verifique se o Client ID e Secret estão corretos.")
+            st.error("❌ Falha na autenticação.")
         else:
             all_data = []
             page = 1
-            progress_text = st.empty() # Espaço para o contador de progresso
+            progress_text = st.empty()
             
-            with st.spinner("Conectando à API e coletando dados..."):
+            # Mudamos o endpoint para /skus que é mais completo para dimensões
+            API_SKUS = "https://supply.logistica.totvs.app/wms/query/api/v1/skus"
+
+            with st.spinner("Coletando dimensões e códigos de barras..."):
                 while True:
-                    url = "https://supply.logistica.totvs.app/wms/query/api/v1/produtos"
                     params = {
                         "page": page, 
                         "pageSize": 500, 
@@ -72,64 +73,69 @@ if st.button("🚀 Iniciar Consulta de SKUs"):
                     }
                     
                     try:
-                        res = requests.get(url, params=params, headers={"Authorization": f"Bearer {token}"}, timeout=60)
+                        res = requests.get(API_SKUS, params=params, headers={"Authorization": f"Bearer {token}"}, timeout=60)
                         
                         if res.status_code == 200:
                             data = res.json()
-                            items = data.get('items', [])
+                            skus = data.get('items', [])
                             
-                            if not items:
+                            if not skus:
                                 break
                             
-                            for p in items:
-                                # Verifica controle de lote e validade
-                                c_lote = any('Lote' in c.get('descricao', '') for c in p.get('caracteristicas', []))
-                                c_val = any('Data de Validade' in c.get('descricao', '') for c in p.get('caracteristicas', []))
+                            for sku in skus:
+                                # Extração de Dimensões
+                                dim = sku.get('dimensao') or {}
+                                altura = dim.get('altura', 0)
+                                largura = dim.get('largura', 0)
+                                comprimento = dim.get('comprimento', 0)
                                 
-                                for sku in p.get('skus', []):
-                                    all_data.append({
-                                        'Código': clean_text(p.get('codigo')),
-                                        'Descrição': clean_text(p.get('descricaoComercial')),
-                                        'Unidade Medida': clean_text(p.get('unidadeMedida', '')),
-                                        'SKU': clean_text(sku.get('descricao')),
-                                        'EAN': extract_codigo_barras(sku.get('codigosBarras')),
-                                        'Situação': clean_text(sku.get('situacao', sku.get('status', ''))),
-                                        'Lote': "Sim" if c_lote else "Não",
-                                        'Validade': "Sim" if c_val else "Não"
-                                    })
+                                # Dados do Produto Pai
+                                prod = sku.get('produto') or {}
+                                
+                                all_data.append({
+                                    'Código Produto': clean_text(prod.get('codigo')),
+                                    'Descrição Comercial': clean_text(prod.get('descricaoComercial')),
+                                    'Descrição SKU': clean_text(sku.get('descricao')),
+                                    'Código de Barras': extract_codigo_barras(sku.get('codigosBarras')),
+                                    'Situação': clean_text(sku.get('situacao')),
+                                    'Altura': altura,
+                                    'Largura': largura,
+                                    'Comprimento': comprimento,
+                                    'Fracionado': "Sim" if sku.get('fracionado') else "Não",
+                                    'Qtd Unidades': sku.get('quantidadeUnidadesProduto', 1)
+                                })
                             
-                            # Atualiza o contador na tela
-                            progress_text.info(f"⏳ Processando: {len(all_data)} SKUs encontrados até agora (Página {page})...")
+                            progress_text.info(f"⏳ Processando: {len(all_data)} SKUs (Página {page})...")
                             
                             if not data.get('hasNext'):
                                 break
                             page += 1
                         else:
-                            st.error(f"Erro na API (Página {page}): Status {res.status_code}")
+                            st.error(f"Erro na API de SKUs: {res.status_code}")
                             break
                     except Exception as e:
                         st.error(f"Erro de conexão: {e}")
                         break
 
             if all_data:
-                progress_text.empty() # Limpa o texto de progresso
+                progress_text.empty()
                 df = pd.DataFrame(all_data)
                 
-                st.success(f"✅ Consulta finalizada! Total de {len(all_data)} SKUs processados.")
+                st.success(f"✅ Sucesso! {len(all_data)} SKUs processados com dimensões.")
                 
-                # Exibe a tabela na tela
+                # Exibição
                 st.dataframe(df, use_container_width=True)
                 
-                # Gerar Excel para download
+                # Download
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                     df.to_excel(writer, index=False)
                 
                 st.download_button(
-                    label="📥 Baixar Planilha de Produtos (Excel)",
+                    label="📥 Baixar Planilha Completa",
                     data=buf.getvalue(),
-                    file_name=f"produtos_wms_unidade_{u_id[:8]}.xlsx",
+                    file_name="skus_detalhado_wms.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
-                st.warning("⚠️ Nenhum produto encontrado para esta Unidade ID.")
+                st.warning("⚠️ Nenhum SKU encontrado.")
