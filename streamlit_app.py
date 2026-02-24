@@ -12,7 +12,6 @@ def clean_text(text):
 
 def extract_codigo_barras(codigos_barras):
     if isinstance(codigos_barras, list) and codigos_barras:
-        # Pega o primeiro código de barras da lista
         primeiro = codigos_barras[0].get('codigoBarras', '') if isinstance(codigos_barras[0], dict) else ''
         return clean_text(primeiro)
     return ''
@@ -33,7 +32,7 @@ def gera_token_wms(client_id, client_secret):
 
 # --- INTERFACE STREAMLIT ---
 st.set_page_config(page_title="WMS SKU Detail", layout="wide")
-st.title("📦 Consulta Detalhada de SKUs WMS")
+st.title("📦 Consulta Analítica de SKUs (Dimensões e Peso)")
 
 with st.sidebar:
     st.header("🔑 Credenciais WMS")
@@ -48,23 +47,22 @@ with st.sidebar:
     st.caption("🔒 Dados protegidos por sessão.")
 
 # --- BOTÃO DE EXECUÇÃO ---
-if st.button("🚀 Iniciar Consulta Analítica"):
+if st.button("🚀 Iniciar Extração de Dados"):
     if not all([c_id, c_secret, u_id]):
         st.error("⚠️ Preencha todos os campos na barra lateral.")
     else:
         token = gera_token_wms(c_id, c_secret)
         
         if not token:
-            st.error("❌ Falha na autenticação.")
+            st.error("❌ Falha na autenticação. Verifique Client ID e Secret.")
         else:
             all_data = []
             page = 1
             progress_text = st.empty()
             
-            # Mudamos o endpoint para /skus que é mais completo para dimensões
             API_SKUS = "https://supply.logistica.totvs.app/wms/query/api/v1/skus"
 
-            with st.spinner("Coletando dimensões e códigos de barras..."):
+            with st.spinner("Buscando dados técnicos dos SKUs..."):
                 while True:
                     params = {
                         "page": page, 
@@ -89,6 +87,9 @@ if st.button("🚀 Iniciar Consulta Analítica"):
                                 largura = dim.get('largura', 0)
                                 comprimento = dim.get('comprimento', 0)
                                 
+                                # Extração de Peso (Novo Campo)
+                                peso = sku.get('peso', 0.0)
+                                
                                 # Dados do Produto Pai
                                 prod = sku.get('produto') or {}
                                 
@@ -98,11 +99,12 @@ if st.button("🚀 Iniciar Consulta Analítica"):
                                     'Descrição SKU': clean_text(sku.get('descricao')),
                                     'Código de Barras': extract_codigo_barras(sku.get('codigosBarras')),
                                     'Situação': clean_text(sku.get('situacao')),
-                                    'Altura': altura,
-                                    'Largura': largura,
-                                    'Comprimento': comprimento,
+                                    'Peso (kg)': peso if peso is not None else 0.0,
+                                    'Altura': altura if altura is not None else 0.0,
+                                    'Largura': largura if largura is not None else 0.0,
+                                    'Comprimento': comprimento if comprimento is not None else 0.0,
                                     'Fracionado': "Sim" if sku.get('fracionado') else "Não",
-                                    'Qtd Unidades': sku.get('quantidadeUnidadesProduto', 1)
+                                    'Qtd Unid. Internas': sku.get('quantidadeUnidadesProduto', 1)
                                 })
                             
                             progress_text.info(f"⏳ Processando: {len(all_data)} SKUs (Página {page})...")
@@ -121,21 +123,21 @@ if st.button("🚀 Iniciar Consulta Analítica"):
                 progress_text.empty()
                 df = pd.DataFrame(all_data)
                 
-                st.success(f"✅ Sucesso! {len(all_data)} SKUs processados com dimensões.")
+                st.success(f"✅ Extração concluída! {len(all_data)} SKUs catalogados.")
                 
-                # Exibição
+                # Exibição dos dados na tela
                 st.dataframe(df, use_container_width=True)
                 
-                # Download
+                # Preparação do arquivo Excel para download
                 buf = io.BytesIO()
                 with pd.ExcelWriter(buf, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False)
+                    df.to_excel(writer, index=False, sheet_name='SKUs_Detalhado')
                 
                 st.download_button(
-                    label="📥 Baixar Planilha Completa",
+                    label="📥 Baixar Planilha Técnica",
                     data=buf.getvalue(),
-                    file_name="skus_detalhado_wms.xlsx",
+                    file_name="cadastro_tecnico_skus.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
             else:
-                st.warning("⚠️ Nenhum SKU encontrado.")
+                st.warning("⚠️ Nenhum SKU encontrado para os critérios informados.")
